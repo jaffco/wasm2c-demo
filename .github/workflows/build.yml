@@ -21,13 +21,13 @@ jobs:
             toolchain_url: "https://developer.arm.com/-/media/Files/downloads/gnu-rm/10-2020q4/gcc-arm-none-eabi-10-2020-q4-major-x86_64-linux.tar.bz2"
             toolchain_dir: "gcc-arm-none-eabi-10-2020-q4-major"
             extract_cmd: "tar -xjf"
-            install_deps: "sudo apt-get update && sudo apt-get install -y make bash curl bzip2 git"
+            install_deps: "sudo apt-get update && sudo apt-get install -y make bash curl bzip2 git wabt binaryen"
           - os: macos-latest
             name: "macOS"
             toolchain_url: "https://developer.arm.com/-/media/Files/downloads/gnu-rm/10-2020q4/gcc-arm-none-eabi-10-2020-q4-major-mac.tar.bz2"
             toolchain_dir: "gcc-arm-none-eabi-10-2020-q4-major"
             extract_cmd: "tar -xjf"
-            install_deps: "brew install make bash curl"
+            install_deps: "brew install make bash curl wabt binaryen"
           - os: windows-latest
             name: "Windows"
             toolchain_url: "https://developer.arm.com/-/media/Files/downloads/gnu-rm/10-2020q4/gcc-arm-none-eabi-10-2020-q4-major-win32.zip"
@@ -70,6 +70,19 @@ jobs:
         arm-none-eabi-gcc --version
       shell: bash
     
+    - name: Install Emscripten
+      uses: mymindstorm/setup-emsdk@v14
+      with:
+        version: '3.1.50'
+    
+    - name: Verify WASM Tools
+      run: |
+        echo "Checking installed WASM tools..."
+        emcc --version
+        wasm2c --version || echo "⚠️  wasm2c not found (required)"
+        wasm-opt --version || echo "⚠️  wasm-opt not found (optional)"
+      shell: bash
+    
     - name: Initialize Repository
       run: |
         # Make init.sh executable (important for Windows and some Unix systems)
@@ -95,8 +108,16 @@ jobs:
         echo "Using make command: $MAKE_CMD"
         echo "ARM GCC location: $(which arm-none-eabi-gcc)"
         
-        echo "Building..."
-        if $MAKE_CMD clean && $MAKE_CMD; then
+        echo "Building WASM app..."
+        if $MAKE_CMD clean && $MAKE_CMD app; then
+          echo "✅ WASM app built successfully!"
+        else
+          echo "❌ Failed to build WASM app."
+          exit 1
+        fi
+        
+        echo "Building main application..."
+        if $MAKE_CMD; then
           echo "✅ Successfully built!"
         else
           echo "❌ Failed to build."
