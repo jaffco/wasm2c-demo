@@ -1,3 +1,6 @@
 [submodule "libDaisy"]
 	path = libDaisy
 	url = https://github.com/jaffco/libDaisy
+[submodule "wasm2c-runtime"]
+	path = wasm2c-runtime
+	url = https://github.com/jaffco/wasm2c-runtime

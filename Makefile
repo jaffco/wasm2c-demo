@@ -17,12 +17,12 @@ C_SOURCES = \
 
 # WASM runtime C sources (in parent src directory)
 C_SOURCES += \
-	wasm-rt/wasm-rt-impl.c \
-	wasm-rt/wasm-rt-exceptions-impl.c \
-	wasm-rt/wasm-rt-mem-impl.c
+	wasm2c-runtime/src/wasm-rt-impl.c \
+	wasm2c-runtime/src/wasm-rt-exceptions-impl.c \
+	wasm2c-runtime/src/wasm-rt-mem-impl.c
 
 # Include directories
-C_INCLUDES += -Iwasm-rt
+C_INCLUDES += -Iwasm2c-runtime/include
 C_INCLUDES += -Ibuild # generated files
 
 # Library Locations
