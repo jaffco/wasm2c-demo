@@ -11,7 +11,7 @@ public:
   void setFrequency(float freq) {
     frequency = freq;
     phaseInc = frequency / sampleRate;
-  }  
+  }
 
   float process() {
     phase += phaseInc;
@@ -22,15 +22,18 @@ public:
 
 };
 
-// Process one audio sample
-// This is exported to the host and called for each audio sample
-float process(float input) {
+// Buffer-based audio processing function
+// This is exported to the host and called with blocks of audio samples
+void process(const float* input, float* output, int num_samples) {
   static Phasor phasor;
-  static bool initialized = false;     
+  static bool initialized = false;
   if (!initialized) {
     phasor.setFrequency(1.f);
     initialized = true;
-  }   
-  float output = phasor.process();
-  return output;
+  }
+
+  // Process each sample in the buffer
+  for (int i = 0; i < num_samples; i++) {
+    output[i] = phasor.process();
+  }
 }

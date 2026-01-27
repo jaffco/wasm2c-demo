@@ -14,8 +14,8 @@
 extern "C" {
 #endif
 
-// Export audio processing function
-WASM_EXPORT_AS("process") float process(float input);
+// Export buffer-based audio processing function
+WASM_EXPORT_AS("process") void process(const float* input, float* output, int num_samples);
 
 #ifdef __cplusplus
 }

@@ -2,7 +2,8 @@
 
 set -e
 
-cd ./wasm-module && ./build-wasm.sh && cd ..
+# Build WASM app and generate wasm2c output
+make app
 
 # NOTE- if just changing wasm, make clean not needed.
 # if changing wasm and main.cpp, make clean also not needed.

@@ -20,9 +20,9 @@ w2c_app wasm_app;
 #define BLOCK_SIZE 128
 
 // Macro for enabling audio
-// #define RUN_AUDIO
+#define RUN_AUDIO
 
-// C wrapper functions for WAMR platform to use SDRAM
+// C wrapper functions for wasm2c platform to use SDRAM
 extern "C" {
     void* sdram_alloc(size_t size) {
         return sdram.malloc(size);
@@ -81,6 +81,29 @@ void os_print_last_error(const char* msg) {
   ERROR_HALT
 }
 
+// Wrapper to handle memory management between host and WASM linear memory
+// WASM functions receive u32 offsets into linear memory, not host pointers
+void wasm2c_app_process(w2c_app* instance, const float* input, float* output, size_t size) {
+  // Get WASM linear memory
+  wasm_rt_memory_t* mem = w2c_app_memory(instance);
+
+  // Use fixed offsets in WASM memory for buffers
+  // WASM memory is 64KB, stack is 8KB. Use safe offsets in the data region.
+  const u32 INPUT_OFFSET = 16384;  // 16KB offset for input buffer
+  const u32 OUTPUT_OFFSET = 32768; // 32KB offset for output buffer
+
+  // Copy input to WASM memory
+  float* wasm_input = (float*)(mem->data + INPUT_OFFSET);
+  memcpy(wasm_input, input, size * sizeof(float));
+
+  // Call the WASM process function with memory offsets
+  w2c_app_process(instance, INPUT_OFFSET, OUTPUT_OFFSET, (u32)size);
+
+  // Copy output from WASM memory
+  float* wasm_output = (float*)(mem->data + OUTPUT_OFFSET);
+  memcpy(output, wasm_output, size * sizeof(float));
+}
+
 bool InitWasm2c() {
   // Initialize WASM runtime
   hardware.PrintLine("Initializing wasm2c Runtime...");
@@ -89,12 +112,13 @@ bool InitWasm2c() {
 
   hardware.PrintLine("Instantiating wasm2c module...");
   wasm2c_app_instantiate(&wasm_app);
-  hardware.PrintLine("wasm2c initialized successfully!"); 
+  hardware.PrintLine("wasm2c initialized successfully!");
+  return true;
 }
 
-// Audio callback using buffer-based WAMR processing
+// Audio callback using buffer-based wasm2c processing
 static void AudioCallback(AudioHandle::InputBuffer in, AudioHandle::OutputBuffer out, size_t size) {
-  // Process the entire buffer at once using the WAMR wrapper
+  // Process the entire buffer at once using the wasm2c wrapper
   wasm2c_app_process(&wasm_app, in[0], out[0], size);
 
   // Copy left channel to right channel for stereo output
@@ -236,7 +260,7 @@ int main() {
   }
     
   hardware.PrintLine("");
-  hardware.PrintLine("[SUCCESS] WAMR AOT benchmark complete!");
+  hardware.PrintLine("[SUCCESS] wasm2c benchmark complete!");
 
   hardware.PrintLine("Test Complete!");
   hardware.SetLed(true);
