@@ -2,7 +2,7 @@
 #include "SDRAM.hpp"
 
 // wasm2c Runtime Headers
-#include "wasm-app.h"
+#include "wasm-module.h"
 
 using namespace daisy;
 static DaisySeed hardware;
@@ -11,7 +11,7 @@ static DaisySeed hardware;
 static Jaffx::SDRAM sdram;
 
 // wasm2c runtime engine
-w2c_app wasm_app;
+w2c_module wasm_module;
 
 // Macro for halting on errors
 #define ERROR_HALT while (true) {}
@@ -20,7 +20,7 @@ w2c_app wasm_app;
 #define BLOCK_SIZE 128
 
 // Macro for enabling audio
-#define RUN_AUDIO
+// #define RUN_AUDIO
 
 // C wrapper functions for wasm2c platform to use SDRAM
 extern "C" {
@@ -83,9 +83,9 @@ void os_print_last_error(const char* msg) {
 
 // Wrapper to handle memory management between host and WASM linear memory
 // WASM functions receive u32 offsets into linear memory, not host pointers
-void wasm2c_app_process(w2c_app* instance, const float* input, float* output, size_t size) {
+void wasm2c_module_process(w2c_module* instance, const float* input, float* output, size_t size) {
   // Get WASM linear memory
-  wasm_rt_memory_t* mem = w2c_app_memory(instance);
+  wasm_rt_memory_t* mem = w2c_module_memory(instance);
 
   // Use fixed offsets in WASM memory for buffers
   // WASM memory is 64KB, stack is 8KB. Use safe offsets in the data region.
@@ -97,7 +97,7 @@ void wasm2c_app_process(w2c_app* instance, const float* input, float* output, si
   memcpy(wasm_input, input, size * sizeof(float));
 
   // Call the WASM process function with memory offsets
-  w2c_app_process(instance, INPUT_OFFSET, OUTPUT_OFFSET, (u32)size);
+  w2c_module_process(instance, INPUT_OFFSET, OUTPUT_OFFSET, (u32)size);
 
   // Copy output from WASM memory
   float* wasm_output = (float*)(mem->data + OUTPUT_OFFSET);
@@ -111,7 +111,7 @@ bool InitWasm2c() {
   hardware.PrintLine("wasm2c runtime initialized.");
 
   hardware.PrintLine("Instantiating wasm2c module...");
-  wasm2c_app_instantiate(&wasm_app);
+  wasm2c_module_instantiate(&wasm_module);
   hardware.PrintLine("wasm2c initialized successfully!");
   return true;
 }
@@ -119,7 +119,7 @@ bool InitWasm2c() {
 // Audio callback using buffer-based wasm2c processing
 static void AudioCallback(AudioHandle::InputBuffer in, AudioHandle::OutputBuffer out, size_t size) {
   // Process the entire buffer at once using the wasm2c wrapper
-  wasm2c_app_process(&wasm_app, in[0], out[0], size);
+  wasm2c_module_process(&wasm_module, in[0], out[0], size);
 
   // Copy left channel to right channel for stereo output
   memcpy(out[1], out[0], size * sizeof(float));
@@ -157,7 +157,7 @@ int main() {
     // prepare and process single-sample buffers
     float input_buffer[1] = {input};
     float output_buffer[1] = {0.0f};
-    wasm2c_app_process(&wasm_app, input_buffer, output_buffer, 1);
+    wasm2c_module_process(&wasm_module, input_buffer, output_buffer, 1);
     float output = output_buffer[0];
 
     hardware.PrintLine("  process(" FLT_FMT3 ") = " FLT_FMT3, FLT_VAR3(input), FLT_VAR3(output));
@@ -180,7 +180,7 @@ int main() {
     float input = daisy::Random::GetFloat(-1.f, 1.f);
     float input_buffer[1] = {input};
     float output_buffer[1] = {0.0f};
-    wasm2c_app_process(&wasm_app, input_buffer, output_buffer, 1);
+    wasm2c_module_process(&wasm_module, input_buffer, output_buffer, 1);
     float output = output_buffer[0];
     
     warmup_result += output;
@@ -211,7 +211,7 @@ int main() {
 
     Timer timer;
     timer.start();
-    wasm2c_app_process(&wasm_app, input_buffer, output_buffer, BLOCK_SIZE);
+    wasm2c_module_process(&wasm_module, input_buffer, output_buffer, BLOCK_SIZE);
     timer.end();
     
     float elapsed_us = timer.usElapsed();
