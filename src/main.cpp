@@ -4,6 +4,36 @@
 // wasm2c Runtime Headers
 #include "wasm-module.h"
 
+// Faust base classes needed for generated code
+class Meta {
+public:
+    virtual void declare(const char* key, const char* value) = 0;
+    virtual ~Meta() {}
+};
+
+class UI {
+public:
+    virtual void openHorizontalBox(const char* label) = 0;
+    virtual void openVerticalBox(const char* label) = 0;
+    virtual void closeBox() = 0;
+    virtual void declare(float* zone, const char* key, const char* val) = 0;
+    virtual void addVerticalSlider(const char* label, float* zone, float init, float min, float max, float step) = 0;
+    virtual void addNumEntry(const char* label, float* zone, float init, float min, float max, float step) = 0;
+    virtual ~UI() {}
+};
+
+class dsp {
+public:
+    virtual ~dsp() {}
+    virtual int getNumInputs() = 0;
+    virtual int getNumOutputs() = 0;
+    virtual void init(int sample_rate) = 0;
+    virtual void compute(int count, float** inputs, float** outputs) = 0;
+    virtual void buildUserInterface(UI* ui_interface) = 0;
+};
+
+#include "../wasm-module/springreverb.cpp"
+
 using namespace daisy;
 static DaisySeed hardware;
 
@@ -13,6 +43,9 @@ static Jaffx::SDRAM sdram;
 // wasm2c runtime engine
 w2c_module wasm_module;
 
+// Native DSP instance
+mydsp* mDSP;
+
 // Macro for halting on errors
 #define ERROR_HALT while (true) {}
 
@@ -21,6 +54,9 @@ w2c_module wasm_module;
 
 // Macro for enabling audio
 // #define RUN_AUDIO
+
+// Macro for using native impl for audio
+// #define NATIVE_AUDIO
 
 // C wrapper functions for wasm2c platform to use SDRAM
 extern "C" {
@@ -118,8 +154,18 @@ bool InitWasm2c() {
 
 // Audio callback using buffer-based wasm2c processing
 static void AudioCallback(AudioHandle::InputBuffer in, AudioHandle::OutputBuffer out, size_t size) {
+
+  #ifndef NATIVE_AUDIO
   // Process the entire buffer at once using the wasm2c wrapper
   wasm2c_module_process(&wasm_module, in[0], out[0], size);
+  #endif
+
+  #ifdef NATIVE_AUDIO
+  // Native audio processing
+  float* inBuff = const_cast<float*>(in[0]);
+  float* outBuff = out[0];
+  mDSP->compute(size, &inBuff, &outBuff);
+  #endif
 
   // Copy left channel to right channel for stereo output
   memcpy(out[1], out[0], size * sizeof(float));
@@ -140,6 +186,15 @@ int main() {
   sdram.init();
   hardware.PrintLine("SDRAM initialized (64MB at 0xC0000000)");
   hardware.PrintLine("");   
+
+  // use a placement new to construct the DSP object in SDRAM
+  void* dsp_memory = sdram.malloc(sizeof(mydsp));
+  if (!dsp_memory) {
+    hardware.PrintLine("FATAL: Unable to allocate memory for DSP object in SDRAM");
+    ERROR_HALT
+  }
+  mDSP = new (dsp_memory) mydsp();
+  mDSP->init(48000); // Initialize DSP at 48kHz sample rate
 
   // Initialize wasm2c runtime
   if (!InitWasm2c()) {
@@ -174,93 +229,162 @@ int main() {
   // Warmup phase
   hardware.PrintLine("");
   hardware.PrintLine("[WARMUP] Running %d warmup iterations...", WARMUP_RUNS);
-  volatile float warmup_result = 0.0f;
+  volatile float warmup_result_wasm = 0.0f;
+  volatile float warmup_result_native = 0.0f;
   for (int i = 0; i < WARMUP_RUNS; i++) {
     // prepare and process single-sample buffers
     float input = daisy::Random::GetFloat(-1.f, 1.f);
     float input_buffer[1] = {input};
-    float output_buffer[1] = {0.0f};
-    wasm2c_module_process(&wasm_module, input_buffer, output_buffer, 1);
-    float output = output_buffer[0];
+    float output_buffer_wasm[1] = {0.0f};
+    float output_buffer_native[1] = {0.0f};
     
-    warmup_result += output;
+    // WASM warmup
+    wasm2c_module_process(&wasm_module, input_buffer, output_buffer_wasm, 1);
+    warmup_result_wasm += output_buffer_wasm[0];
+    
+    // Native warmup
+    float* in_ptr = input_buffer;
+    float* out_ptr = output_buffer_native;
+    mDSP->compute(1, &in_ptr, &out_ptr);
+    warmup_result_native += output_buffer_native[0];
   }
-  hardware.PrintLine("[OK] Warmup complete (result=" FLT_FMT3 ")", FLT_VAR3(warmup_result));
+  hardware.PrintLine("[OK] Warmup complete (WASM result=" FLT_FMT3 ", Native result=" FLT_FMT3 ")", FLT_VAR3(warmup_result_wasm), FLT_VAR3(warmup_result_native));
   
   // Benchmark phase
   hardware.PrintLine("");
   hardware.PrintLine("[BENCHMARK] Running %d iterations...", BENCHMARK_RUNS);
   
-  float total_us = 0.0f;
-  float min_us = 1e9f;
-  float max_us = 0.0f;
-  float total_ticks = 0.0f;
-  float min_ticks = 1e9f;
-  float max_ticks = 0.0f;
-  volatile float checksum = 0.0f;  // Prevent optimization
+  // WASM timing variables
+  float total_us_wasm = 0.0f;
+  float min_us_wasm = 1e9f;
+  float max_us_wasm = 0.0f;
+  float total_ticks_wasm = 0.0f;
+  float min_ticks_wasm = 1e9f;
+  float max_ticks_wasm = 0.0f;
+  volatile float checksum_wasm = 0.0f;
+  
+  // Native timing variables
+  float total_us_native = 0.0f;
+  float min_us_native = 1e9f;
+  float max_us_native = 0.0f;
+  float total_ticks_native = 0.0f;
+  float min_ticks_native = 1e9f;
+  float max_ticks_native = 0.0f;
+  volatile float checksum_native = 0.0f;
   
   for (int i = 0; i < BENCHMARK_RUNS; i++) {
 
     // prepare buffers
     float input_buffer[BLOCK_SIZE];
-    float output_buffer[BLOCK_SIZE];
+    float output_buffer_wasm[BLOCK_SIZE];
+    float output_buffer_native[BLOCK_SIZE];
     for (int j = 0; j < BLOCK_SIZE; j++) {
       input_buffer[j] = daisy::Random::GetFloat(-1.f, 1.f);
-      output_buffer[j] = 0.f;
+      output_buffer_wasm[j] = 0.f;
+      output_buffer_native[j] = 0.f;
     }
 
-    Timer timer;
-    timer.start();
-    wasm2c_module_process(&wasm_module, input_buffer, output_buffer, BLOCK_SIZE);
-    timer.end();
+    // Benchmark WASM
+    Timer timer_wasm;
+    timer_wasm.start();
+    wasm2c_module_process(&wasm_module, input_buffer, output_buffer_wasm, BLOCK_SIZE);
+    timer_wasm.end();
     
-    float elapsed_us = timer.usElapsed();
-    float elapsed_ticks = (float)timer.ticksElapsed();
+    float elapsed_us_wasm = timer_wasm.usElapsed();
+    float elapsed_ticks_wasm = (float)timer_wasm.ticksElapsed();
     
-    total_us += elapsed_us;
-    total_ticks += elapsed_ticks;
+    total_us_wasm += elapsed_us_wasm;
+    total_ticks_wasm += elapsed_ticks_wasm;
     
-    if (elapsed_us < min_us) min_us = elapsed_us;
-    if (elapsed_us > max_us) max_us = elapsed_us;
-    if (elapsed_ticks < min_ticks) min_ticks = elapsed_ticks;
-    if (elapsed_ticks > max_ticks) max_ticks = elapsed_ticks;
+    if (elapsed_us_wasm < min_us_wasm) min_us_wasm = elapsed_us_wasm;
+    if (elapsed_us_wasm > max_us_wasm) max_us_wasm = elapsed_us_wasm;
+    if (elapsed_ticks_wasm < min_ticks_wasm) min_ticks_wasm = elapsed_ticks_wasm;
+    if (elapsed_ticks_wasm > max_ticks_wasm) max_ticks_wasm = elapsed_ticks_wasm;
     
-    // use checksum to prevent optimization
+    // Benchmark Native
+    Timer timer_native;
+    float* in_ptr = input_buffer;
+    float* out_ptr = output_buffer_native;
+    timer_native.start();
+    mDSP->compute(BLOCK_SIZE, &in_ptr, &out_ptr);
+    timer_native.end();
+    
+    float elapsed_us_native = timer_native.usElapsed();
+    float elapsed_ticks_native = (float)timer_native.ticksElapsed();
+    
+    total_us_native += elapsed_us_native;
+    total_ticks_native += elapsed_ticks_native;
+    
+    if (elapsed_us_native < min_us_native) min_us_native = elapsed_us_native;
+    if (elapsed_us_native > max_us_native) max_us_native = elapsed_us_native;
+    if (elapsed_ticks_native < min_ticks_native) min_ticks_native = elapsed_ticks_native;
+    if (elapsed_ticks_native > max_ticks_native) max_ticks_native = elapsed_ticks_native;
+    
+    // use checksums to prevent optimization
     for (int j = 0; j < BLOCK_SIZE; j++) {
-      checksum += output_buffer[j];
+      checksum_wasm += output_buffer_wasm[j];
+      checksum_native += output_buffer_native[j];
     }  
   }
   
-  float avg_us = total_us / BENCHMARK_RUNS;
-  float avg_ticks = total_ticks / BENCHMARK_RUNS;
+  float avg_us_wasm = total_us_wasm / BENCHMARK_RUNS;
+  float avg_ticks_wasm = total_ticks_wasm / BENCHMARK_RUNS;
+  float avg_us_native = total_us_native / BENCHMARK_RUNS;
+  float avg_ticks_native = total_ticks_native / BENCHMARK_RUNS;
     
   hardware.PrintLine("");
   hardware.PrintLine("=== BENCHMARK RESULTS ===");
   hardware.PrintLine("Iterations: %d", BENCHMARK_RUNS);
-  hardware.PrintLine("Average:    " FLT_FMT3 " us (%d ticks)", FLT_VAR3(avg_us), (int)avg_ticks);
-  hardware.PrintLine("Minimum:    " FLT_FMT3 " us (%d ticks)", FLT_VAR3(min_us), (int)min_ticks);
-  hardware.PrintLine("Maximum:    " FLT_FMT3 " us (%d ticks)", FLT_VAR3(max_us), (int)max_ticks);
-  hardware.PrintLine("Checksum:   " FLT_FMT3 " (prevents optimization)", FLT_VAR3(checksum));
+  hardware.PrintLine("");
+
+  hardware.PrintLine("WASM Implementation:");
+  hardware.PrintLine("  Average:    " FLT_FMT3 " us (%d ticks)", FLT_VAR3(avg_us_wasm), (int)avg_ticks_wasm);
+  hardware.PrintLine("  Minimum:    " FLT_FMT3 " us (%d ticks)", FLT_VAR3(min_us_wasm), (int)min_ticks_wasm);
+  hardware.PrintLine("  Maximum:    " FLT_FMT3 " us (%d ticks)", FLT_VAR3(max_us_wasm), (int)max_ticks_wasm);
+  hardware.PrintLine("  Checksum:   " FLT_FMT3, FLT_VAR3(checksum_wasm));
+  hardware.PrintLine("");
+
+  hardware.PrintLine("Native Implementation:");
+  hardware.PrintLine("  Average:    " FLT_FMT3 " us (%d ticks)", FLT_VAR3(avg_us_native), (int)avg_ticks_native);
+  hardware.PrintLine("  Minimum:    " FLT_FMT3 " us (%d ticks)", FLT_VAR3(min_us_native), (int)min_ticks_native);
+  hardware.PrintLine("  Maximum:    " FLT_FMT3 " us (%d ticks)", FLT_VAR3(max_us_native), (int)max_ticks_native);
+  hardware.PrintLine("  Checksum:   " FLT_FMT3, FLT_VAR3(checksum_native));
+  hardware.PrintLine("");
+  
+  hardware.PrintLine("Comparison:");
+  float speedup = avg_us_native / avg_us_wasm;
+  hardware.PrintLine("  WASM is " FLT_FMT3 "x slower than Native", FLT_VAR3(speedup));
+  hardware.PrintLine("  Checksum difference: " FLT_FMT3 " (should be ~0)", FLT_VAR3(checksum_wasm - checksum_native));
     
-  // Calculate real-time performance
-  float samples_per_us = (float)BLOCK_SIZE / avg_us;
-  float samples_per_sec = samples_per_us * 1000000.0f;
-  float realtime_factor_48k = samples_per_sec / 48000.0f;
+  // Calculate real-time performance for both
+  float samples_per_us_wasm = (float)BLOCK_SIZE / avg_us_wasm;
+  float samples_per_sec_wasm = samples_per_us_wasm * 1000000.0f;
+  float realtime_factor_48k_wasm = samples_per_sec_wasm / 48000.0f;
+  
+  float samples_per_us_native = (float)BLOCK_SIZE / avg_us_native;
+  float samples_per_sec_native = samples_per_us_native * 1000000.0f;
+  float realtime_factor_48k_native = samples_per_sec_native / 48000.0f;
     
   hardware.PrintLine("");
   hardware.PrintLine("=== REAL-TIME ANALYSIS ===");
   hardware.PrintLine("Sample rate: 48000 Hz");
-  hardware.PrintLine("Throughput: " FLT_FMT3 " samples/sec", FLT_VAR3(samples_per_sec));
-  hardware.PrintLine("Real-time factor: " FLT_FMT3 "x", FLT_VAR3(realtime_factor_48k));
+  hardware.PrintLine("WASM Throughput:   " FLT_FMT3 " samples/sec (" FLT_FMT3 "x real-time)", FLT_VAR3(samples_per_sec_wasm), FLT_VAR3(realtime_factor_48k_wasm));
+  hardware.PrintLine("Native Throughput: " FLT_FMT3 " samples/sec (" FLT_FMT3 "x real-time)", FLT_VAR3(samples_per_sec_native), FLT_VAR3(realtime_factor_48k_native));
     
-  if (realtime_factor_48k >= 1.0f) {
-    hardware.PrintLine("Result: CAN run in REAL-TIME! OK");
+  hardware.PrintLine("");
+  if (realtime_factor_48k_wasm >= 1.0f) {
+    hardware.PrintLine("WASM: CAN run in REAL-TIME! OK");
   } else {
-    hardware.PrintLine("Result: Too slow for real-time X");
+    hardware.PrintLine("WASM: Too slow for real-time X");
+  }
+  if (realtime_factor_48k_native >= 1.0f) {
+    hardware.PrintLine("Native: CAN run in REAL-TIME! OK");
+  } else {
+    hardware.PrintLine("Native: Too slow for real-time X");
   }
     
   hardware.PrintLine("");
-  hardware.PrintLine("[SUCCESS] wasm2c benchmark complete!");
+  hardware.PrintLine("[SUCCESS] WASM vs Native benchmark complete!");
 
   hardware.PrintLine("Test Complete!");
   hardware.SetLed(true);
