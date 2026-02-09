@@ -4,35 +4,8 @@
 // wasm2c Runtime Headers
 #include "wasm-module.h"
 
-// Faust base classes needed for generated code
-class Meta {
-public:
-    virtual void declare(const char* key, const char* value) = 0;
-    virtual ~Meta() {}
-};
-
-class UI {
-public:
-    virtual void openHorizontalBox(const char* label) = 0;
-    virtual void openVerticalBox(const char* label) = 0;
-    virtual void closeBox() = 0;
-    virtual void declare(float* zone, const char* key, const char* val) = 0;
-    virtual void addVerticalSlider(const char* label, float* zone, float init, float min, float max, float step) = 0;
-    virtual void addNumEntry(const char* label, float* zone, float init, float min, float max, float step) = 0;
-    virtual ~UI() {}
-};
-
-class dsp {
-public:
-    virtual ~dsp() {}
-    virtual int getNumInputs() = 0;
-    virtual int getNumOutputs() = 0;
-    virtual void init(int sample_rate) = 0;
-    virtual void compute(int count, float** inputs, float** outputs) = 0;
-    virtual void buildUserInterface(UI* ui_interface) = 0;
-};
-
-#include "../wasm-module/springreverb.cpp"
+// Portaklon native implementation
+#include "../wasm-module/Portaklon/Portaklon.hpp"
 
 using namespace daisy;
 static DaisySeed hardware;
@@ -43,8 +16,8 @@ static Jaffx::SDRAM sdram;
 // wasm2c runtime engine
 w2c_module wasm_module;
 
-// Native DSP instance
-mydsp* mDSP;
+// Native Portaklon instance
+Portaklon* nativePortaklon;
 
 // Macro for halting on errors
 #define ERROR_HALT while (true) {}
@@ -163,10 +136,8 @@ static void AudioCallback(AudioHandle::InputBuffer in, AudioHandle::OutputBuffer
   #endif
 
   #ifdef NATIVE_AUDIO
-  // Native audio processing
-  float* inBuff = const_cast<float*>(in[0]);
-  float* outBuff = out[0];
-  mDSP->compute(size, &inBuff, &outBuff);
+  // Native Portaklon processing
+  nativePortaklon->process(in[0], out[0], size);
   #endif
 
   // Copy left channel to right channel for stereo output
@@ -179,7 +150,7 @@ int main() {
 
   System::Delay(200);
   hardware.PrintLine("===========================================");
-  hardware.PrintLine("         wasm2c Demo - Daisy Wrapper       ");
+  hardware.PrintLine("         Portaklon WASM Benchmark         ");
   hardware.PrintLine("===========================================");
   hardware.PrintLine("");
 
@@ -189,14 +160,14 @@ int main() {
   hardware.PrintLine("SDRAM initialized (64MB at 0xC0000000)");
   hardware.PrintLine("");   
 
-  // use a placement new to construct the DSP object in SDRAM
-  void* dsp_memory = sdram.malloc(sizeof(mydsp));
-  if (!dsp_memory) {
-    hardware.PrintLine("FATAL: Unable to allocate memory for DSP object in SDRAM");
+  // Allocate and initialize native Portaklon in SDRAM
+  void* portaklon_memory = sdram.malloc(sizeof(Portaklon));
+  if (!portaklon_memory) {
+    hardware.PrintLine("FATAL: Unable to allocate memory for Portaklon object in SDRAM");
     ERROR_HALT
   }
-  mDSP = new (dsp_memory) mydsp();
-  mDSP->init(48000); // Initialize DSP at 48kHz sample rate
+  nativePortaklon = new (portaklon_memory) Portaklon();
+  nativePortaklon->init(48000, BLOCK_SIZE); // Initialize Portaklon at 48kHz sample rate
 
   // Initialize wasm2c runtime
   if (!InitWasm2c()) {
@@ -204,7 +175,7 @@ int main() {
     ERROR_HALT
   }  
 
-  hardware.PrintLine("=== Testing Process Function ===");
+  hardware.PrintLine("=== Testing Portaklon Process Function ===");
 
   // Generate a few test samples with different inputs
   hardware.PrintLine("Calling process() with various inputs...");
@@ -234,21 +205,27 @@ int main() {
   volatile float warmup_result_wasm = 0.0f;
   volatile float warmup_result_native = 0.0f;
   for (int i = 0; i < WARMUP_RUNS; i++) {
-    // prepare and process single-sample buffers
-    float input = daisy::Random::GetFloat(-1.f, 1.f);
-    float input_buffer[1] = {input};
-    float output_buffer_wasm[1] = {0.0f};
-    float output_buffer_native[1] = {0.0f};
+    // prepare and process block buffers
+    float input_buffer[BLOCK_SIZE];
+    float output_buffer_wasm[BLOCK_SIZE];
+    float output_buffer_native[BLOCK_SIZE];
+    for (int j = 0; j < BLOCK_SIZE; j++) {
+      input_buffer[j] = daisy::Random::GetFloat(-1.f, 1.f);
+      output_buffer_wasm[j] = 0.f;
+      output_buffer_native[j] = 0.f;
+    }
     
     // WASM warmup
-    wasm2c_module_process(&wasm_module, input_buffer, output_buffer_wasm, 1);
-    warmup_result_wasm += output_buffer_wasm[0];
+    wasm2c_module_process(&wasm_module, input_buffer, output_buffer_wasm, BLOCK_SIZE);
+    for (int j = 0; j < BLOCK_SIZE; j++) {
+      warmup_result_wasm += output_buffer_wasm[j];
+    }
     
     // Native warmup
-    float* in_ptr = input_buffer;
-    float* out_ptr = output_buffer_native;
-    mDSP->compute(1, &in_ptr, &out_ptr);
-    warmup_result_native += output_buffer_native[0];
+    nativePortaklon->process(input_buffer, output_buffer_native, BLOCK_SIZE);
+    for (int j = 0; j < BLOCK_SIZE; j++) {
+      warmup_result_native += output_buffer_native[j];
+    }
   }
   hardware.PrintLine("[OK] Warmup complete (WASM result=" FLT_FMT3 ", Native result=" FLT_FMT3 ")", FLT_VAR3(warmup_result_wasm), FLT_VAR3(warmup_result_native));
   
@@ -305,10 +282,8 @@ int main() {
     
     // Benchmark Native
     Timer timer_native;
-    float* in_ptr = input_buffer;
-    float* out_ptr = output_buffer_native;
     timer_native.start();
-    mDSP->compute(BLOCK_SIZE, &in_ptr, &out_ptr);
+    nativePortaklon->process(input_buffer, output_buffer_native, BLOCK_SIZE);
     timer_native.end();
     
     float elapsed_us_native = timer_native.usElapsed();
@@ -339,14 +314,14 @@ int main() {
   hardware.PrintLine("Iterations: %d", BENCHMARK_RUNS);
   hardware.PrintLine("");
 
-  hardware.PrintLine("WASM Implementation:");
+  hardware.PrintLine("WASM Portaklon:");
   hardware.PrintLine("  Average:    " FLT_FMT3 " us (%d ticks)", FLT_VAR3(avg_us_wasm), (int)avg_ticks_wasm);
   hardware.PrintLine("  Minimum:    " FLT_FMT3 " us (%d ticks)", FLT_VAR3(min_us_wasm), (int)min_ticks_wasm);
   hardware.PrintLine("  Maximum:    " FLT_FMT3 " us (%d ticks)", FLT_VAR3(max_us_wasm), (int)max_ticks_wasm);
   hardware.PrintLine("  Checksum:   " FLT_FMT3, FLT_VAR3(checksum_wasm));
   hardware.PrintLine("");
 
-  hardware.PrintLine("Native Implementation:");
+  hardware.PrintLine("Native Portaklon:");
   hardware.PrintLine("  Average:    " FLT_FMT3 " us (%d ticks)", FLT_VAR3(avg_us_native), (int)avg_ticks_native);
   hardware.PrintLine("  Minimum:    " FLT_FMT3 " us (%d ticks)", FLT_VAR3(min_us_native), (int)min_ticks_native);
   hardware.PrintLine("  Maximum:    " FLT_FMT3 " us (%d ticks)", FLT_VAR3(max_us_native), (int)max_ticks_native);
@@ -355,7 +330,7 @@ int main() {
   
   hardware.PrintLine("Comparison:");
   float speedup = avg_us_native / avg_us_wasm;
-  hardware.PrintLine("  WASM is " FLT_FMT3 "x slower than Native", FLT_VAR3(speedup));
+  hardware.PrintLine("  WASM Portaklon is " FLT_FMT3 "x slower than Native Portaklon", FLT_VAR3(speedup));
   hardware.PrintLine("  Checksum difference: " FLT_FMT3 " (should be ~0)", FLT_VAR3(checksum_wasm - checksum_native));
     
   // Calculate real-time performance for both
@@ -370,23 +345,23 @@ int main() {
   hardware.PrintLine("");
   hardware.PrintLine("=== REAL-TIME ANALYSIS ===");
   hardware.PrintLine("Sample rate: 48000 Hz");
-  hardware.PrintLine("WASM Throughput:   " FLT_FMT3 " samples/sec (" FLT_FMT3 "x real-time)", FLT_VAR3(samples_per_sec_wasm), FLT_VAR3(realtime_factor_48k_wasm));
-  hardware.PrintLine("Native Throughput: " FLT_FMT3 " samples/sec (" FLT_FMT3 "x real-time)", FLT_VAR3(samples_per_sec_native), FLT_VAR3(realtime_factor_48k_native));
+  hardware.PrintLine("WASM Portaklon Throughput:   " FLT_FMT3 " samples/sec (" FLT_FMT3 "x real-time)", FLT_VAR3(samples_per_sec_wasm), FLT_VAR3(realtime_factor_48k_wasm));
+  hardware.PrintLine("Native Portaklon Throughput: " FLT_FMT3 " samples/sec (" FLT_FMT3 "x real-time)", FLT_VAR3(samples_per_sec_native), FLT_VAR3(realtime_factor_48k_native));
     
   hardware.PrintLine("");
   if (realtime_factor_48k_wasm >= 1.0f) {
-    hardware.PrintLine("WASM: CAN run in REAL-TIME! OK");
+    hardware.PrintLine("WASM Portaklon: CAN run in REAL-TIME! OK");
   } else {
-    hardware.PrintLine("WASM: Too slow for real-time X");
+    hardware.PrintLine("WASM Portaklon: Too slow for real-time X");
   }
   if (realtime_factor_48k_native >= 1.0f) {
-    hardware.PrintLine("Native: CAN run in REAL-TIME! OK");
+    hardware.PrintLine("Native Portaklon: CAN run in REAL-TIME! OK");
   } else {
-    hardware.PrintLine("Native: Too slow for real-time X");
+    hardware.PrintLine("Native Portaklon: Too slow for real-time X");
   }
     
   hardware.PrintLine("");
-  hardware.PrintLine("[SUCCESS] WASM vs Native benchmark complete!");
+  hardware.PrintLine("[SUCCESS] Portaklon WASM vs Native benchmark complete!");
 
   // =============================================
   // IMPULSE RESPONSE TEST (10 seconds)
