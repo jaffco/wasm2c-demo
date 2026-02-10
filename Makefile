@@ -21,6 +21,10 @@ C_SOURCES += \
 	wasm2c-runtime/src/wasm-rt-exceptions-impl.c \
 	wasm2c-runtime/src/wasm-rt-mem-impl.c
 
+# WASM runtime C++ sources (for WASI stubs)
+CPP_SOURCES += \
+	wasm2c-runtime/src/wasi-stubs.cpp
+
 # Include directories
 C_INCLUDES += -Iwasm2c-runtime/include
 C_INCLUDES += -Iwasm-module/build # generated files
