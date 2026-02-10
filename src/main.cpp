@@ -123,10 +123,12 @@ void wasm2c_module_process(w2c_module* instance, const float* input, float* outp
   // Get WASM linear memory
   wasm_rt_memory_t* mem = w2c_module_memory(instance);
 
-  // Use fixed offsets in WASM memory for buffers
-  // WASM memory is 64KB, stack is 8KB. Use safe offsets in the data region.
-  const u32 INPUT_OFFSET = 16384;  // 16KB offset for input buffer
-  const u32 OUTPUT_OFFSET = 32768; // 32KB offset for output buffer
+  // Use fixed offsets in WASM memory for I/O buffers.
+  // The WASM module's static DSP data spans offsets ~4720 to ~979920,
+  // and the stack pointer starts at 1111552 (grows downward).
+  // Place buffers safely above the stack to avoid corrupting DSP state.
+  const u32 INPUT_OFFSET = 1114112;   // 0x110000 - above stack top
+  const u32 OUTPUT_OFFSET = 1114624;  // 0x110200 - above input buffer
 
   // Copy input to WASM memory
   float* wasm_input = (float*)(mem->data + INPUT_OFFSET);
