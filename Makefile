@@ -1,8 +1,19 @@
+# Get the directory where this Makefile is located
+CONFIG_DIR := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))
+
+# Library Locations (allow environment override)
+RTNEURAL_DIR ?= $(CONFIG_DIR)wasm-module/RTNeural
+
+# Normalize paths for cross-platform compatibility
+normalize_path = $(subst \,/,$(1))
+RTNEURAL_DIR := $(call normalize_path,$(RTNEURAL_DIR))
+
 # Project Name
 TARGET = main
 
 # Sources
 CPP_SOURCES = src/main.cpp
+CPP_SOURCES += $(RTNEURAL_DIR)/RTNeural/RTNeural.cpp
 
 # WASM-generated C files (in current directory)
 C_SOURCES = \
@@ -28,6 +39,13 @@ CPP_SOURCES += \
 # Include directories
 C_INCLUDES += -Iwasm2c-runtime/include
 C_INCLUDES += -Iwasm-module/build # generated files
+
+# Includes and flags for RTNeural
+C_INCLUDES += -I$(RTNEURAL_DIR)
+C_INCLUDES += -I$(RTNEURAL_DIR)/modules
+
+# RTNeural compiler flags
+CPPFLAGS += -DRTNEURAL_DEFAULT_ALIGNMENT=8 -DRTNEURAL_NO_DEBUG=1 -DRTNEURAL_USE_EIGEN=1
 
 # Library Locations
 include common.mk

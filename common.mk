@@ -29,6 +29,14 @@ OPT=-Ofast
 # Core location, and generic makefile.
 include $(SYSTEM_FILES_DIR)/Makefile
 
+# Includes and flags for RTNeural
+C_INCLUDES += -I$(RTNEURAL_DIR)
+C_INCLUDES += -I$(RTNEURAL_DIR)/modules/Eigen
+C_INCLUDES += -I$(RTNEURAL_DIR)/modules/rt-nam
+
+# RTNeural compiler flags
+CPPFLAGS += -DRTNEURAL_DEFAULT_ALIGNMENT=8 -DRTNEURAL_NO_DEBUG=1 -DRTNEURAL_USE_EIGEN=1
+
 # Debug information (can be disabled by setting VERBOSE=0)
 ifneq ($(VERBOSE),0)
 $(info CONFIG_DIR: $(CONFIG_DIR))
