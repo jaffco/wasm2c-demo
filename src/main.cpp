@@ -4,35 +4,9 @@
 // wasm2c Runtime Headers
 #include "wasm-module.h"
 
-// Faust base classes needed for generated code
-class Meta {
-public:
-    virtual void declare(const char* key, const char* value) = 0;
-    virtual ~Meta() {}
-};
-
-class UI {
-public:
-    virtual void openHorizontalBox(const char* label) = 0;
-    virtual void openVerticalBox(const char* label) = 0;
-    virtual void closeBox() = 0;
-    virtual void declare(float* zone, const char* key, const char* val) = 0;
-    virtual void addVerticalSlider(const char* label, float* zone, float init, float min, float max, float step) = 0;
-    virtual void addNumEntry(const char* label, float* zone, float init, float min, float max, float step) = 0;
-    virtual ~UI() {}
-};
-
-class dsp {
-public:
-    virtual ~dsp() {}
-    virtual int getNumInputs() = 0;
-    virtual int getNumOutputs() = 0;
-    virtual void init(int sample_rate) = 0;
-    virtual void compute(int count, float** inputs, float** outputs) = 0;
-    virtual void buildUserInterface(UI* ui_interface) = 0;
-};
-
-#include "../wasm-module/springreverb.cpp"
+// gen~ (Max/MSP) exported code - Phhhsrrr Phaser
+// GENLIB_NO_JSON is passed via Makefile C_DEFS
+#include "gen_exported.cpp"
 
 using namespace daisy;
 static DaisySeed hardware;
@@ -43,8 +17,8 @@ static Jaffx::SDRAM sdram;
 // wasm2c runtime engine
 w2c_module wasm_module;
 
-// Native DSP instance
-mydsp* mDSP;
+// Native gen~ DSP instance
+CommonState* nativeDSP;
 
 // Macro for halting on errors
 #define ERROR_HALT while (true) {}
@@ -124,8 +98,6 @@ void wasm2c_module_process(w2c_module* instance, const float* input, float* outp
   wasm_rt_memory_t* mem = w2c_module_memory(instance);
 
   // Use fixed offsets in WASM memory for I/O buffers.
-  // The WASM module's static DSP data spans offsets ~4720 to ~979920,
-  // and the stack pointer starts at 1111552 (grows downward).
   // Place buffers safely above the stack to avoid corrupting DSP state.
   const u32 INPUT_OFFSET = 1114112;   // 0x110000 - above stack top
   const u32 OUTPUT_OFFSET = 1114624;  // 0x110200 - above input buffer
@@ -163,10 +135,11 @@ static void AudioCallback(AudioHandle::InputBuffer in, AudioHandle::OutputBuffer
   #endif
 
   #ifdef NATIVE_AUDIO
-  // Native audio processing
+  // Native audio processing via gen~
   float* inBuff = const_cast<float*>(in[0]);
-  float* outBuff = out[0];
-  mDSP->compute(size, &inBuff, &outBuff);
+  float* ins[2] = {inBuff, inBuff};
+  float* outs[1] = {out[0]};
+  gen_exported::perform(nativeDSP, ins, 2, outs, 1, size);
   #endif
 
   // Copy left channel to right channel for stereo output
@@ -179,7 +152,7 @@ int main() {
 
   System::Delay(200);
   hardware.PrintLine("===========================================");
-  hardware.PrintLine("         wasm2c Demo - Daisy Wrapper       ");
+  hardware.PrintLine("     wasm2c Demo - Phhhsrrr Phaser         ");
   hardware.PrintLine("===========================================");
   hardware.PrintLine("");
 
@@ -189,14 +162,14 @@ int main() {
   hardware.PrintLine("SDRAM initialized (64MB at 0xC0000000)");
   hardware.PrintLine("");   
 
-  // use a placement new to construct the DSP object in SDRAM
-  void* dsp_memory = sdram.malloc(sizeof(mydsp));
-  if (!dsp_memory) {
-    hardware.PrintLine("FATAL: Unable to allocate memory for DSP object in SDRAM");
+  // Initialize native gen~ DSP
+  hardware.PrintLine("Initializing native gen~ DSP...");
+  nativeDSP = (CommonState*)gen_exported::create(48000, BLOCK_SIZE);
+  if (!nativeDSP) {
+    hardware.PrintLine("FATAL: Unable to create native DSP instance");
     ERROR_HALT
   }
-  mDSP = new (dsp_memory) mydsp();
-  mDSP->init(48000); // Initialize DSP at 48kHz sample rate
+  hardware.PrintLine("Native gen~ DSP initialized.");
 
   // Initialize wasm2c runtime
   if (!InitWasm2c()) {
@@ -245,9 +218,9 @@ int main() {
     warmup_result_wasm += output_buffer_wasm[0];
     
     // Native warmup
-    float* in_ptr = input_buffer;
-    float* out_ptr = output_buffer_native;
-    mDSP->compute(1, &in_ptr, &out_ptr);
+    float* warmup_ins[2] = {input_buffer, input_buffer};
+    float* warmup_outs[1] = {output_buffer_native};
+    gen_exported::perform(nativeDSP, warmup_ins, 2, warmup_outs, 1, 1);
     warmup_result_native += output_buffer_native[0];
   }
   hardware.PrintLine("[OK] Warmup complete (WASM result=" FLT_FMT3 ", Native result=" FLT_FMT3 ")", FLT_VAR3(warmup_result_wasm), FLT_VAR3(warmup_result_native));
@@ -305,10 +278,10 @@ int main() {
     
     // Benchmark Native
     Timer timer_native;
-    float* in_ptr = input_buffer;
-    float* out_ptr = output_buffer_native;
+    float* bench_ins[2] = {input_buffer, input_buffer};
+    float* bench_outs[1] = {output_buffer_native};
     timer_native.start();
-    mDSP->compute(BLOCK_SIZE, &in_ptr, &out_ptr);
+    gen_exported::perform(nativeDSP, bench_ins, 2, bench_outs, 1, BLOCK_SIZE);
     timer_native.end();
     
     float elapsed_us_native = timer_native.usElapsed();

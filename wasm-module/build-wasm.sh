@@ -1,8 +1,6 @@
 #!/bin/bash
 set -e
 
-WAMR_ROOT=../wasm-micro-runtime
-
 echo "Building WASM module..."
 
 # Clean old build artifacts
@@ -21,6 +19,7 @@ fi
 echo "Using emscripten: $(which emcc)"
 
 # Compile C++ to WASM using emscripten
+# Sources: module.cpp (wrapper) + gen~ runtime and exported DSP code
 echo "Step 1: Compiling C++ to WASM..."
 emcc \
     -O2 \
@@ -29,8 +28,14 @@ emcc \
     -sEXPORTED_FUNCTIONS=_process \
     -sERROR_ON_UNDEFINED_SYMBOLS=0 \
     --no-entry \
+    -DGENLIB_NO_JSON \
+    -DGENLIB_USE_FLOAT32 \
+    -DGENLIB_NO_DENORM_TEST \
+    -DWIN32 \
+    -IPhhhsrrr/gen_dsp \
     -o build/module.wasm \
-    module.cpp
+    module.cpp \
+    Phhhsrrr/gen_dsp/genlib.cpp
 
 echo "WASM module size: $(wc -c < build/module.wasm) bytes"
 
